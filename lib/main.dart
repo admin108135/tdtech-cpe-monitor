@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' as io;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -195,6 +198,301 @@ class SignalMetrics {
           : _parseNumeric(lteSinrStr, -20),
       nrRsrq: _parseNumeric(nrRsrqStr, -20),
       timestamp: DateTime.now(),
+    );
+  }
+}
+
+class CellTower {
+  final String type;
+  final bool registered;
+  final String pci;
+  final String arfcn;
+  final String band;
+  final String plmn;
+  final String cid;
+  final String tac;
+  final double? rsrp;
+  final double? rsrq;
+  final double? sinr;
+  final double? rssi;
+
+  CellTower({
+    required this.type,
+    required this.registered,
+    required this.pci,
+    required this.arfcn,
+    required this.band,
+    required this.plmn,
+    required this.cid,
+    required this.tac,
+    required this.rsrp,
+    required this.rsrq,
+    required this.sinr,
+    required this.rssi,
+  });
+
+  factory CellTower.fromMap(Map<dynamic, dynamic> m) {
+    String s(String k) => (m[k] ?? '').toString();
+    double? d(String k) {
+      final v = m[k];
+      return v is num ? v.toDouble() : null;
+    }
+
+    final mcc = s('mcc');
+    final mnc = s('mnc');
+    return CellTower(
+      type: s('type'),
+      registered: m['registered'] == true,
+      pci: s('pci'),
+      arfcn: s('arfcn'),
+      band: s('band'),
+      plmn: mcc.isEmpty ? '' : '$mcc-$mnc',
+      cid: s('cid'),
+      tac: s('tac'),
+      rsrp: d('rsrp'),
+      rsrq: d('rsrq'),
+      sinr: d('sinr'),
+      rssi: d('rssi'),
+    );
+  }
+}
+
+class CellScanScreen extends StatefulWidget {
+  const CellScanScreen({super.key});
+
+  @override
+  State<CellScanScreen> createState() => _CellScanScreenState();
+}
+
+class _CellScanScreenState extends State<CellScanScreen> {
+  static const MethodChannel _channel = MethodChannel('com.tdtech.cpe/cellinfo');
+  bool _busy = false;
+  bool _needPerm = false;
+  String _status = '正在读取手机基带小区信息...';
+  final List<CellTower> _cells = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _busy = true;
+      _status = '正在读取手机基带...';
+    });
+    final perm = await Permission.phone.status;
+    if (!perm.isGranted) {
+      final req = await Permission.phone.request();
+      if (!req.isGranted) {
+        setState(() {
+          _busy = false;
+          _needPerm = true;
+          _status = '未获得电话权限，无法读取小区信息';
+        });
+        return;
+      }
+    }
+    try {
+      final raw = await _channel.invokeMethod<String>('getCellInfo');
+      if (raw == null) throw '空响应';
+      final doc = jsonDecode(raw) as Map<String, dynamic>;
+      final st = doc['status'];
+      if (st == 'need_permission') {
+        setState(() {
+          _busy = false;
+          _needPerm = true;
+          _status = '未获得电话权限';
+        });
+        return;
+      }
+      if (st == 'error') {
+        setState(() {
+          _busy = false;
+          _status = '读取失败: ${doc['message'] ?? '未知'}';
+        });
+        return;
+      }
+      final list = (doc['cells'] as List? ?? []);
+      _cells
+        ..clear()
+        ..addAll(list.map((e) => CellTower.fromMap(e as Map<dynamic, dynamic>)));
+      _cells.sort((a, b) => (b.rsrp ?? -150).compareTo(a.rsrp ?? -150));
+      setState(() {
+        _busy = false;
+        _needPerm = false;
+        _status = '共 ${_cells.length} 个小区（服务小区 + 周边邻区）';
+      });
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _status = '读取异常: $e';
+      });
+    }
+  }
+
+  Color _rsrpColor(double? v) {
+    if (v == null) return Colors.grey;
+    if (v >= -85) return Colors.greenAccent;
+    if (v >= -100) return Colors.amberAccent;
+    return Colors.redAccent;
+  }
+
+  Color _sinrColor(double? v) {
+    if (v == null) return Colors.grey;
+    if (v >= 15) return Colors.greenAccent;
+    if (v >= 5) return Colors.amberAccent;
+    return Colors.redAccent;
+  }
+
+  String _fmt(double? v, String unit) =>
+      v == null ? '--' : '${v.toStringAsFixed(0)}$unit';
+
+  Widget _buildCellCard(CellTower c, bool neighbor) {
+    final title = neighbor ? '邻区' : '服务小区';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: neighbor ? Colors.white12 : Colors.cyanAccent.withOpacity(0.4),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white12,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text('${c.type} · $title',
+                    style: const TextStyle(fontSize: 12, color: Colors.white70)),
+              ),
+              const Spacer(),
+              if (c.band.isNotEmpty)
+                Text(c.band,
+                    style: const TextStyle(fontSize: 12, color: Colors.amberAccent)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'PCI ${c.pci.isEmpty ? '--' : c.pci} · 频点 ${c.arfcn.isEmpty ? '--' : c.arfcn}'
+            '${c.plmn.isEmpty ? '' : ' · PLMN ${c.plmn}'}',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _signalItem('RSRP', _fmt(c.rsrp, ' dBm'), _rsrpColor(c.rsrp)),
+              _signalItem('RSRQ', _fmt(c.rsrq, ' dB'), _rsrpColor(c.rsrq)),
+              _signalItem('SINR', _fmt(c.sinr, ' dB'), _sinrColor(c.sinr)),
+              _signalItem('RSSI', _fmt(c.rssi, ' dBm'), Colors.white70),
+            ],
+          ),
+          if (c.cid.isNotEmpty && c.cid != '0')
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('Cell ID: ${c.cid}${c.tac.isEmpty ? '' : ' · TAC ${c.tac}'}',
+                  style: const TextStyle(fontSize: 11, color: Colors.white38)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _signalItem(String label, String value, Color color) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 11, color: Colors.white54)),
+          const SizedBox(height: 2),
+          Text(value,
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final serving = _cells.where((c) => c.registered).toList();
+    final neighbors = _cells.where((c) => !c.registered).toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('手机基带小区扫描'),
+        backgroundColor: const Color(0xFF1A1A1A),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: '重新扫描',
+            onPressed: _busy ? null : _refresh,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF252525),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              _status,
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '说明：以下为手机自身基带扫描到的小区，非 CPE 空口邻区；部分国产系统仅返回服务小区、不提供周边邻区。',
+            style: TextStyle(fontSize: 11, color: Colors.white38),
+          ),
+          const SizedBox(height: 14),
+          if (_needPerm)
+            Center(
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.phone_android),
+                label: const Text('授予电话权限'),
+                onPressed: _refresh,
+              ),
+            ),
+          if (!_needPerm && serving.isNotEmpty) ...[
+            const Text('服务小区',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...serving.map((c) => _buildCellCard(c, false)),
+          ],
+          if (!_needPerm && neighbors.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const Text('周边邻区',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...neighbors.map((c) => _buildCellCard(c, true)),
+          ],
+          if (!_needPerm && !_busy && _cells.isEmpty)
+            Container(
+              margin: const EdgeInsets.only(top: 20),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                '系统未返回任何小区信息。可能原因：未驻留蜂窝、信号过弱，或系统裁剪了基带信息（华为/荣耀机型较常见）。',
+                style: TextStyle(fontSize: 13, color: Colors.white60),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -751,6 +1049,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: const Text('鼎桥 INS2 信号与锁频'),
         backgroundColor: const Color(0xFF1A1A1A),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.network_cell, color: Colors.cyanAccent),
+            tooltip: '手机基带小区扫描',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const CellScanScreen()),
+            ),
+          ),
           IconButton(
             icon:
                 const Icon(Icons.lock_person_outlined, color: Colors.amberAccent),

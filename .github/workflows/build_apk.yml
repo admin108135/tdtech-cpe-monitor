@@ -28,10 +28,12 @@ jobs:
         run: |
           mkdir temp_project
           cd temp_project
-          flutter create --org com.tdtech --project-name tdtech_cpe_monitor .
+          flutter create --org com.tdtech --project-name tdtech_cpe_monitor --android-language kotlin .
           cp -f ../pubspec.yaml ./pubspec.yaml
           cp -f ../lib/main.dart ./lib/main.dart
           cp -f ../android/app/src/main/AndroidManifest.xml ./android/app/src/main/AndroidManifest.xml
+          mkdir -p ./android/app/src/main/kotlin/com/tdtech/tdtech_cpe_monitor
+          cp -f ../android/app/src/main/kotlin/com/tdtech/tdtech_cpe_monitor/MainActivity.kt ./android/app/src/main/kotlin/com/tdtech/tdtech_cpe_monitor/MainActivity.kt
           flutter pub get
           flutter build apk --release
 
