@@ -1318,8 +1318,7 @@ class WebAuthScreen extends StatefulWidget {
 
 class _WebAuthScreenState extends State<WebAuthScreen> {
   final CookieManager _cookieManager = CookieManager.instance();
-  String _capturedLog =
-      '提示：请先登录后台。下方网页浏览信号/小区/锁小区等页面时，此处会自动记录 GET 响应与 POST 请求的接口和报文，可用于核对邻区字段。';
+  List<Map<String, String>> _captures = [];
 
   static const String _xhrInterceptorScript = '''
     (function() {
@@ -1354,6 +1353,69 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
       };
     })();
   ''';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCaptures();
+  }
+
+  Future<void> _loadCaptures() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('dev_captures');
+    if (raw != null) {
+      try {
+        final list = jsonDecode(raw) as List;
+        _captures =
+            list.map((e) => Map<String, String>.from(e as Map)).toList();
+      } catch (_) {}
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveCaptures() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('dev_captures', jsonEncode(_captures));
+  }
+
+  void _addCapture(String method, String url, String payload) {
+    final key = '$method $url $payload';
+    final dup = _captures.any(
+        (c) => '${c['method']} ${c['url']} ${c['payload']}' == key);
+    if (!dup) {
+      _captures.insert(0, {
+        'method': method,
+        'url': url,
+        'payload': payload,
+        'time': DateTime.now().toIso8601String().substring(11, 19),
+      });
+      if (_captures.length > 50) _captures.removeLast();
+      _saveCaptures();
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _copyText(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已复制到剪贴板')));
+    }
+  }
+
+  String _encodeAll() {
+    return _captures
+        .map((c) =>
+            '[${c['time']}] ${c['method']} ${c['url']}\n报文: ${c['payload']}')
+        .join('\n\n---\n\n');
+  }
+
+  Future<void> _clearCaptures() async {
+    _captures.clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('dev_captures');
+    setState(() {});
+  }
 
   Future<void> _extractCookieAndClose() async {
     try {
@@ -1390,20 +1452,100 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
       body: Column(
         children: [
           Container(
-            width: double.infinity,
             color: const Color(0xFF263238),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: SelectableText(
-              _capturedLog,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.cyanAccent,
-                fontFamily: 'monospace',
-              ),
-              maxLines: 10,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(
+              children: [
+                Text('已捕获 ${_captures.length} 条',
+                    style: const TextStyle(
+                        fontSize: 12, color: Colors.cyanAccent)),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed:
+                      _captures.isEmpty ? null : () => _copyText(_encodeAll()),
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('复制全部', style: TextStyle(fontSize: 12)),
+                ),
+                TextButton.icon(
+                  onPressed: _captures.isEmpty ? null : _clearCaptures,
+                  icon: const Icon(Icons.delete_outline, size: 16),
+                  label: const Text('清空', style: TextStyle(fontSize: 12)),
+                ),
+              ],
             ),
           ),
           Expanded(
+            flex: 4,
+            child: _captures.isEmpty
+                ? const Center(
+                    child: Text(
+                      '暂无记录。在下方网页浏览信号/小区/锁小区页面后，\n此处会逐条记录 GET 响应与 POST 请求。',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: Colors.white38),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.all(10),
+                    itemCount: _captures.length,
+                    itemBuilder: (ctx, i) {
+                      final c = _captures[i];
+                      return Card(
+                        color: const Color(0xFF1E1E1E),
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white12,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(c['method'] ?? '',
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.amberAccent)),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(c['url'] ?? '',
+                                        style: const TextStyle(
+                                            fontSize: 12,
+                                            fontFamily: 'monospace')),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.copy, size: 16),
+                                    onPressed: () => _copyText(
+                                        '[${c['method']}] ${c['url']}\n报文: ${c['payload']}'),
+                                  ),
+                                ],
+                              ),
+                              Text(c['time'] ?? '',
+                                  style: const TextStyle(
+                                      fontSize: 10, color: Colors.white38)),
+                              const SizedBox(height: 6),
+                              SelectableText(
+                                c['payload'] ?? '',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white70,
+                                    fontFamily: 'monospace'),
+                                maxLines: 6,
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          Expanded(
+            flex: 5,
             child: InAppWebView(
               initialUrlRequest: URLRequest(
                 url: WebUri('${widget.baseUrl}/html/index.html'),
@@ -1431,9 +1573,7 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
                         await prefs.setString('last_dev_api', apiUrl);
                         await prefs.setString('last_dev_method', method);
                         await prefs.setString('last_dev_xml', payload);
-                        setState(() {
-                          _capturedLog = '[$method] $apiUrl\n报文: $payload';
-                        });
+                        _addCapture(method, apiUrl, payload);
                       }
                     }
                   },
