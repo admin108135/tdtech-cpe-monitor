@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' as io;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
@@ -7,18 +7,18 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
-class CPEHttpOverrides extends HttpOverrides {
+class CPEHttpOverrides extends io.HttpOverrides {
   @override
-  HttpClient createHttpClient(SecurityContext? context) {
+  io.HttpClient createHttpClient(io.SecurityContext? context) {
     return super.createHttpClient(context)
       ..badCertificateCallback =
-          (X509Certificate cert, String host, int port) => true;
+          (io.X509Certificate cert, String host, int port) => true;
   }
 }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  HttpOverrides.global = CPEHttpOverrides();
+  io.HttpOverrides.global = CPEHttpOverrides();
   runApp(const CPEMonitorApp());
 }
 
