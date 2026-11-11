@@ -1,0 +1,19 @@
+name: tdtech_cpe_monitor
+description: 鼎桥 5G CPE INS2 基站信号监测与锁频客户端
+publish_to: 'none'
+version: 1.1.0+3
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  xml: ^6.5.0
+  fl_chart: ^0.66.2
+  shared_preferences: ^2.2.2
+  flutter_inappwebview: ^6.0.0
+
+flutter:
+  uses-material-design: true
