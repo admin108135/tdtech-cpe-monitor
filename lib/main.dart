@@ -605,31 +605,56 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _sessionCookie = parts.join('; ');
   }
 
+  static const String _cpeUserAgent =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  Map<String, String> get _baseHeaders {
+    final h = <String, String>{
+      'Referer': '$_baseUrl/html/index.html',
+      'User-Agent': _cpeUserAgent,
+    };
+    if (_sessionCookie.isNotEmpty) h['Cookie'] = _sessionCookie;
+    return h;
+  }
+
   Future<void> _refreshToken() async {
     try {
-      final uri = Uri.parse('$_baseUrl/api/webserver/SesTokInfo');
-      final headers = <String, String>{
-        'Referer': '$_baseUrl/html/index.html',
-      };
-      if (_sessionCookie.isNotEmpty) headers['Cookie'] = _sessionCookie;
+      // 1) 新款固件：/api/webserver/token -> <token>
+      try {
+        final r1 = await http
+            .get(Uri.parse('$_baseUrl/api/webserver/token'),
+                headers: _baseHeaders)
+            .timeout(const Duration(seconds: 3));
+        if (r1.statusCode == 200) {
+          final d1 = XmlDocument.parse(r1.body);
+          final t =
+              d1.rootElement.findElements('token').firstOrNull?.innerText;
+          if (t != null && t.isNotEmpty) _requestToken = t;
+        }
+      } catch (_) {}
 
-      final response = await http
-          .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 3));
-      if (response.statusCode == 200) {
-        final doc = XmlDocument.parse(response.body);
-        final ses =
-            doc.rootElement.findElements('SesInfo').firstOrNull?.innerText;
-        final tok =
-            doc.rootElement.findElements('TokInfo').firstOrNull?.innerText;
-        if (ses != null && _sessionCookie.isEmpty) {
-          _sessionCookie = ses;
+      // 2) 老款固件：/api/webserver/SesTokInfo -> SesInfo / TokInfo
+      try {
+        final r2 = await http
+            .get(Uri.parse('$_baseUrl/api/webserver/SesTokInfo'),
+                headers: _baseHeaders)
+            .timeout(const Duration(seconds: 3));
+        if (r2.statusCode == 200) {
+          final d2 = XmlDocument.parse(r2.body);
+          final ses =
+              d2.rootElement.findElements('SesInfo').firstOrNull?.innerText;
+          final tok =
+              d2.rootElement.findElements('TokInfo').firstOrNull?.innerText;
+          if (ses != null && _sessionCookie.isEmpty) {
+            _sessionCookie = ses;
+          }
+          if (tok != null && tok.isNotEmpty && _requestToken.isEmpty) {
+            _requestToken = tok;
+          }
         }
-        if (tok != null) {
-          _requestToken = tok;
-        }
-        await _persistSession();
-      }
+      } catch (_) {}
+
+      await _persistSession();
     } catch (_) {}
   }
 
@@ -656,10 +681,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _fetchSignalOnce() async {
     try {
       final uri = Uri.parse('$_baseUrl/api/device/signal');
-      final headers = <String, String>{
-        'Referer': '$_baseUrl/html/index.html',
-      };
-      if (_sessionCookie.isNotEmpty) headers['Cookie'] = _sessionCookie;
+      final headers = Map<String, String>.from(_baseHeaders);
       if (_requestToken.isNotEmpty) {
         headers['__RequestVerificationToken'] = _requestToken;
       }
@@ -677,7 +699,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               doc.rootElement.findElements('code').firstOrNull?.innerText ??
                   '未知';
           setState(() {
-            _statusMessage = '需登录授权 (错误码: $code)，请点击右上角钥匙图标登录';
+            _statusMessage =
+                '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]';
           });
           return;
         }
@@ -728,12 +751,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ? Uri.parse(apiPath).path
           : (apiPath.startsWith('/') ? apiPath : '/$apiPath');
       final uri = Uri.parse('$_baseUrl$cleanPath');
-      final headers = <String, String>{
-        'Content-Type': 'application/xml; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': '$_baseUrl/html/index.html',
-      };
-      if (_sessionCookie.isNotEmpty) headers['Cookie'] = _sessionCookie;
+      final headers = Map<String, String>.from(_baseHeaders);
+      headers['Content-Type'] = 'application/xml; charset=UTF-8';
+      headers['X-Requested-With'] = 'XMLHttpRequest';
       if (_requestToken.isNotEmpty) {
         headers['__RequestVerificationToken'] = _requestToken;
       }
@@ -1582,7 +1602,7 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
   Future<void> _extractCookieAndClose() async {
     try {
       final cookies = await _cookieManager.getCookies(
-        url: WebUri('${widget.baseUrl}/html/index.html'),
+        url: WebUri('${widget.baseUrl}/'),
       );
       final cookiePairs = cookies.map((c) => '${c.name}=${c.value}').toList();
       final fullCookieHeader = cookiePairs.join('; ');
