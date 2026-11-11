@@ -569,6 +569,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _timeStep = 0;
   Timer? _pollingTimer;
   bool _fetching = false;
+  String _lastStatus = '';
 
   String get _baseUrl => '${_useHttps ? "https" : "http"}://$_gatewayIp';
 
@@ -706,21 +707,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
               doc.rootElement.findElements('code').firstOrNull?.innerText ??
                   '未知';
           // 鉴权失败只提示，不清空本地 cookie/token，避免会话被误抹掉
-          if (mounted) {
-            setState(() {
-              _statusMessage =
-                  '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]';
-            });
-          }
+          _setStatus(
+              '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]');
           return;
         }
 
         final metrics = SignalMetrics.fromXml(doc);
+        final onlineMsg =
+            '${metrics.plmn} · 在线 (${metrics.timestamp.toIso8601String().substring(11, 19)})';
         if (mounted) {
           setState(() {
             _currentMetrics = metrics;
-            _statusMessage =
-                '${metrics.plmn} · 在线 (${metrics.timestamp.toIso8601String().substring(11, 19)})';
+            _statusMessage = onlineMsg;
+            _lastStatus = onlineMsg;
             _timeStep += 1;
             _rsrpHistory.add(FlSpot(_timeStep, metrics.nrRsrp));
             _sinrHistory.add(FlSpot(_timeStep, metrics.nrSinr));
@@ -729,18 +728,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           });
         }
       } else {
-        if (mounted) {
-          setState(() {
-            _statusMessage = 'HTTP 状态码异常: ${response.statusCode}';
-          });
-        }
+        _setStatus('HTTP 状态码异常: ${response.statusCode}');
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _statusMessage = '连接超时，请确认已连接 CPE Wi-Fi ($_baseUrl)';
-        });
-      }
+      _setStatus('连接超时，请确认已连接 CPE Wi-Fi ($_baseUrl)');
     } finally {
       _fetching = false;
     }
@@ -766,8 +757,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (changed) _persistSession();
   }
 
+  /// 状态文本未变化时不触发重建，避免失败轮询每 3s 空刷界面
+  void _setStatus(String msg) {
+    if (!mounted || msg == _lastStatus) return;
+    _lastStatus = msg;
+    setState(() => _statusMessage = msg);
+  }
+
   Future<String> _postHilinkXml(String apiPath, String xmlBody) async {
-    await _refreshToken();
+    if (_requestToken.isEmpty) await _refreshToken();
     try {
       final cleanPath = apiPath.startsWith('http')
           ? Uri.parse(apiPath).path
@@ -1973,6 +1971,7 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
   final List<WifiSsidInfo> _ssids = [];
   String _stationRaw = '';
   bool _busy = false;
+  bool _submitting = false;
   String _resultMsg = '';
 
   int _selectedIndex = 0;
@@ -2041,9 +2040,9 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
         _enableWifi = cur.enable;
       }
     } catch (e) {
-      _resultMsg = '读取异常: $e';
+      if (mounted) _resultMsg = '读取异常: $e';
     }
-    setState(() => _busy = false);
+    if (mounted) setState(() => _busy = false);
   }
 
   void _parseBasic(String body) {
@@ -2072,6 +2071,11 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
   }
 
   Future<void> _saveWifi() async {
+    if (_submitting) return;
+    if (_ssidCtrl.text.trim().isEmpty) {
+      setState(() => _resultMsg = 'Wi-Fi 名称不能为空');
+      return;
+    }
     final existing = _ssids.firstWhere((e) => e.index == _selectedIndex,
         orElse: () => WifiSsidInfo(
             index: _selectedIndex, ssid: '', mac: '', authmode: '', encryption: '', enable: true));
@@ -2087,21 +2091,57 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
         '<WifiEnable>${_enableWifi ? 1 : 0}</WifiEnable>'
         '<WifiMac>${existing.mac}</WifiMac>'
         '</Ssid></Ssids></request>';
-    final res = await _post('/api/wlan/multi-basic-settings', xml);
-    setState(() => _resultMsg = res);
+    setState(() {
+      _submitting = true;
+      _resultMsg = '保存中…';
+    });
+    String res;
+    try {
+      res = await _post('/api/wlan/multi-basic-settings', xml);
+    } catch (e) {
+      res = '请求异常: $e';
+    }
+    if (mounted) {
+      setState(() {
+        _submitting = false;
+        _resultMsg = res;
+      });
+    }
   }
 
   Future<void> _changeAdminPwd() async {
+    if (_submitting) return;
+    if (_oldPwdCtrl.text.isEmpty || _newPwdCtrl.text.isEmpty) {
+      setState(() => _resultMsg = '请填写当前密码和新密码');
+      return;
+    }
     if (_newPwdCtrl.text != _confirmPwdCtrl.text) {
       setState(() => _resultMsg = '两次输入的新密码不一致');
       return;
     }
+    // 字段名取自同系固件前端参考值；端点与是否加密以本机实测报文为准。
+    const username = 'admin';
     final xml = '<request>'
-        '<oldpassword>${_esc(_oldPwdCtrl.text)}</oldpassword>'
+        '<username>$username</username>'
+        '<currentpassword>${_esc(_oldPwdCtrl.text)}</currentpassword>'
         '<newpassword>${_esc(_newPwdCtrl.text)}</newpassword>'
         '</request>';
-    final res = await _post(_pwdEndpoint, xml);
-    setState(() => _resultMsg = res);
+    setState(() {
+      _submitting = true;
+      _resultMsg = '提交中…';
+    });
+    String res;
+    try {
+      res = await _post(_pwdEndpoint, xml);
+    } catch (e) {
+      res = '请求异常: $e';
+    }
+    if (mounted) {
+      setState(() {
+        _submitting = false;
+        _resultMsg = res;
+      });
+    }
   }
 
   @override
@@ -2225,8 +2265,8 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
                     onChanged: (v) => setState(() => _enableWifi = v),
                   ),
                   ElevatedButton(
-                    onPressed: _saveWifi,
-                    child: const Text('保存 Wi-Fi 设置'),
+                    onPressed: _submitting ? null : _saveWifi,
+                    child: Text(_submitting ? '保存中…' : '保存 Wi-Fi 设置'),
                   ),
                 ],
               ),
@@ -2273,8 +2313,8 @@ class _WifiManageScreenState extends State<WifiManageScreen> {
                   ),
                   const SizedBox(height: 8),
                   ElevatedButton(
-                    onPressed: _changeAdminPwd,
-                    child: const Text('提交修改管理密码'),
+                    onPressed: _submitting ? null : _changeAdminPwd,
+                    child: Text(_submitting ? '提交中…' : '提交修改管理密码'),
                   ),
                   const SizedBox(height: 6),
                   const Text(
