@@ -10,6 +10,10 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+extension StringX on String {
+  String get orDash => isEmpty ? '--' : this;
+}
+
 class CPEHttpOverrides extends io.HttpOverrides {
   @override
   io.HttpClient createHttpClient(io.SecurityContext? context) {
@@ -1162,6 +1166,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           IconButton(
+            icon: const Icon(Icons.content_paste, color: Colors.orangeAccent),
+            tooltip: '粘贴解析邻区文本',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const NeighborTextParseScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.wifi, color: Colors.blueAccent),
+            tooltip: 'Wi-Fi 与密码管理',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => WifiManageScreen(
+                  baseUrl: _baseUrl,
+                  sessionCookie: _sessionCookie,
+                  requestToken: _requestToken,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
             icon:
                 const Icon(Icons.lock_person_outlined, color: Colors.amberAccent),
             tooltip: '锁频段 / 锁PCI',
@@ -1733,6 +1759,540 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
                     },
                   ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class ParsedCell {
+  String pci = '', arfcn = '', band = '', plmn = '';
+  String cellId = '', tac = '', rsrp = '', rsrq = '', sinr = '';
+  String rawLine = '';
+  bool get isEmpty =>
+      pci.isEmpty && arfcn.isEmpty && rsrp.isEmpty && rsrq.isEmpty;
+}
+
+class NeighborTextParseScreen extends StatefulWidget {
+  const NeighborTextParseScreen({super.key});
+
+  @override
+  State<NeighborTextParseScreen> createState() =>
+      _NeighborTextParseScreenState();
+}
+
+class _NeighborTextParseScreenState extends State<NeighborTextParseScreen> {
+  final TextEditingController _input = TextEditingController();
+  final List<ParsedCell> _cells = [];
+
+  static String? _match(String line, List<String> keys) {
+    for (final k in keys) {
+      final m = RegExp(
+              '$k\\s*[=:：]?\\s*(-?\\d+(?:\\.\\d+)?)',
+              caseSensitive: false)
+          .firstMatch(line);
+      if (m != null) return m.group(1);
+    }
+    return null;
+  }
+
+  List<ParsedCell> _parse(String text) {
+    final list = <ParsedCell>[];
+    for (final line in text.split(RegExp(r'[\r\n]+'))) {
+      final t = line.trim();
+      if (t.isEmpty) continue;
+      final pci = _match(t, ['pci', 'PCI']);
+      final arfcn = _match(t, ['arfcn', 'earfcn', 'nrarfcn', 'freq', '频点']);
+      final rsrp = _match(t, ['rsrp']);
+      final rsrq = _match(t, ['rsrq']);
+      final sinr = _match(t, ['sinr']);
+      final cellId = _match(t, ['cell_?id', 'cid', 'ci']);
+      final tac = _match(t, ['tac']);
+      final band = _match(t, ['band', '频段']);
+      final plmnM = RegExp(r'(\d{3})[- ]?(\d{2,3})').firstMatch(t);
+      final hasAnchor = pci != null || arfcn != null || rsrp != null;
+      if (!hasAnchor) continue;
+      final c = ParsedCell()
+        ..pci = pci ?? ''
+        ..arfcn = arfcn ?? ''
+        ..rsrp = rsrp ?? ''
+        ..rsrq = rsrq ?? ''
+        ..sinr = sinr ?? ''
+        ..cellId = cellId ?? ''
+        ..tac = tac ?? ''
+        ..band = band ?? ''
+        ..plmn = plmnM != null ? '${plmnM.group(1)}-${plmnM.group(2)}' : ''
+        ..rawLine = t;
+      list.add(c);
+    }
+    return list;
+  }
+
+  String _exportText() {
+    final buf = StringBuffer();
+    for (var i = 0; i < _cells.length; i++) {
+      final c = _cells[i];
+      buf.writeln(
+          '小区 ${i + 1}: PCI ${c.pci.orDash} · 频点 ${c.arfcn.orDash} · Band ${c.band.orDash} · PLMN ${c.plmn.orDash} · RSRP ${c.rsrp.orDash}dBm · RSRQ ${c.rsrq.orDash}dB · SINR ${c.sinr.orDash}dB · CellID ${c.cellId.orDash} · TAC ${c.tac.orDash}');
+    }
+    return buf.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('邻区文本解析'),
+        actions: [
+          if (_cells.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.copy),
+              tooltip: '复制解析结果',
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: _exportText()));
+                if (mounted) {
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(const SnackBar(content: Text('已复制')));
+                }
+              },
+            ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          TextField(
+            controller: _input,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              labelText: '粘贴 AT 回复 / 基带日志 / 邻区文本',
+              hintText:
+                  '例：NR neighboring cell: PCI=123, ARFCN=630000, RSRP=-80dBm, RSRQ=-11, SINR=8',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            onPressed: () => setState(() => _cells
+              ..clear()
+              ..addAll(_parse(_input.text))),
+            icon: const Icon(Icons.auto_fix_high),
+            label: const Text('解析邻区'),
+          ),
+          const SizedBox(height: 12),
+          if (_cells.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(20),
+              child: Text('尚未解析出小区。每行包含 PCI/频点/RSRP 任一即可识别。',
+                  style: TextStyle(color: Colors.white38)),
+            )
+          else
+            ..._cells.asMap().entries.map((e) {
+              final i = e.key;
+              final c = e.value;
+              return Card(
+                color: const Color(0xFF1E1E1E),
+                margin: const EdgeInsets.only(bottom: 10),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('小区 ${i + 1}',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.cyanAccent)),
+                      const SizedBox(height: 6),
+                      Text(
+                          'PCI ${c.pci.orDash} · 频点 ${c.arfcn.orDash} · Band ${c.band.orDash}'),
+                      Text(
+                          'PLMN ${c.plmn.orDash} · CellID ${c.cellId.orDash} · TAC ${c.tac.orDash}'),
+                      Text(
+                          'RSRP ${c.rsrp.orDash}dBm · RSRQ ${c.rsrq.orDash}dB · SINR ${c.sinr.orDash}dB'),
+                    ],
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+}
+
+class WifiSsidInfo {
+  final int index;
+  final String ssid;
+  final String mac;
+  final String authmode;
+  final String encryption;
+  final bool enable;
+  WifiSsidInfo({
+    required this.index,
+    required this.ssid,
+    required this.mac,
+    required this.authmode,
+    required this.encryption,
+    required this.enable,
+  });
+}
+
+class WifiManageScreen extends StatefulWidget {
+  final String baseUrl;
+  final String sessionCookie;
+  final String requestToken;
+  const WifiManageScreen({
+    super.key,
+    required this.baseUrl,
+    required this.sessionCookie,
+    required this.requestToken,
+  });
+
+  @override
+  State<WifiManageScreen> createState() => _WifiManageScreenState();
+}
+
+class _WifiManageScreenState extends State<WifiManageScreen> {
+  static const String _ua =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  final List<WifiSsidInfo> _ssids = [];
+  String _stationRaw = '';
+  bool _busy = false;
+  String _resultMsg = '';
+
+  int _selectedIndex = 0;
+  final _ssidCtrl = TextEditingController();
+  final _pwdCtrl = TextEditingController();
+  String _authMode = 'WPA2-PSK';
+  String _encryption = 'AES';
+  bool _enableWifi = true;
+
+  final _oldPwdCtrl = TextEditingController();
+  final _newPwdCtrl = TextEditingController();
+  final _confirmPwdCtrl = TextEditingController();
+  String _pwdEndpoint = '/api/user/password_scram';
+
+  static String _esc(String s) => s
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+
+  Map<String, String> get _headers {
+    final h = <String, String>{
+      'Referer': '${widget.baseUrl}/html/index.html',
+      'User-Agent': _ua,
+    };
+    if (widget.sessionCookie.isNotEmpty) h['Cookie'] = widget.sessionCookie;
+    if (widget.requestToken.isNotEmpty) {
+      h['__RequestVerificationToken'] = widget.requestToken;
+    }
+    return h;
+  }
+
+  Future<String> _get(String ep) async {
+    final r = await http
+        .get(Uri.parse('${widget.baseUrl}$ep'), headers: _headers)
+        .timeout(const Duration(seconds: 5));
+    return r.body;
+  }
+
+  Future<String> _post(String ep, String xml) async {
+    final h = Map<String, String>.from(_headers);
+    h['Content-Type'] = 'application/xml; charset=UTF-8';
+    h['X-Requested-With'] = 'XMLHttpRequest';
+    final r = await http
+        .post(Uri.parse('${widget.baseUrl}$ep'), headers: h, body: xml)
+        .timeout(const Duration(seconds: 5));
+    return 'HTTP ${r.statusCode}\n${r.body}';
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _busy = true;
+      _resultMsg = '';
+    });
+    try {
+      final basic = await _get('/api/wlan/multi-basic-settings');
+      _parseBasic(basic);
+      _stationRaw = await _get('/api/wlan/station-information');
+      if (_ssids.isNotEmpty) {
+        final cur = _ssids.firstWhere((e) => e.index == _selectedIndex,
+            orElse: () => _ssids.first);
+        _selectedIndex = cur.index;
+        _ssidCtrl.text = cur.ssid;
+        _authMode = cur.authmode.isEmpty ? 'WPA2-PSK' : cur.authmode;
+        _encryption = cur.encryption.isEmpty ? 'AES' : cur.encryption;
+        _enableWifi = cur.enable;
+      }
+    } catch (e) {
+      _resultMsg = '读取异常: $e';
+    }
+    setState(() => _busy = false);
+  }
+
+  void _parseBasic(String body) {
+    _ssids.clear();
+    try {
+      final doc = XmlDocument.parse(body);
+      final ssids = doc
+              .rootElement
+              .findElements('Ssids')
+              .firstOrNull
+              ?.findElements('Ssid') ??
+          [];
+      for (final s in ssids) {
+        String t(String n) =>
+            s.findElements(n).firstOrNull?.innerText.trim() ?? '';
+        _ssids.add(WifiSsidInfo(
+          index: int.tryParse(t('Index')) ?? 0,
+          ssid: t('WifiSsid'),
+          mac: t('WifiMac'),
+          authmode: t('WifiAuthmode'),
+          encryption: t('WifiWpaencryptionmodes'),
+          enable: t('WifiEnable') == '1',
+        ));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveWifi() async {
+    final existing = _ssids.firstWhere((e) => e.index == _selectedIndex,
+        orElse: () => WifiSsidInfo(
+            index: _selectedIndex, ssid: '', mac: '', authmode: '', encryption: '', enable: true));
+    final pwdNode = _pwdCtrl.text.isEmpty
+        ? ''
+        : '<WifiWpapsk>${_esc(_pwdCtrl.text)}</WifiWpapsk>';
+    final xml = '<request><Ssids><Ssid>'
+        '<Index>$_selectedIndex</Index>'
+        '<WifiSsid>${_esc(_ssidCtrl.text.trim())}</WifiSsid>'
+        '$pwdNode'
+        '<WifiAuthmode>$_authMode</WifiAuthmode>'
+        '<WifiWpaencryptionmodes>$_encryption</WifiWpaencryptionmodes>'
+        '<WifiEnable>${_enableWifi ? 1 : 0}</WifiEnable>'
+        '<WifiMac>${existing.mac}</WifiMac>'
+        '</Ssid></Ssids></request>';
+    final res = await _post('/api/wlan/multi-basic-settings', xml);
+    setState(() => _resultMsg = res);
+  }
+
+  Future<void> _changeAdminPwd() async {
+    if (_newPwdCtrl.text != _confirmPwdCtrl.text) {
+      setState(() => _resultMsg = '两次输入的新密码不一致');
+      return;
+    }
+    final xml = '<request>'
+        '<oldpassword>${_esc(_oldPwdCtrl.text)}</oldpassword>'
+        '<newpassword>${_esc(_newPwdCtrl.text)}</newpassword>'
+        '</request>';
+    final res = await _post(_pwdEndpoint, xml);
+    setState(() => _resultMsg = res);
+  }
+
+  @override
+  void dispose() {
+    _ssidCtrl.dispose();
+    _pwdCtrl.dispose();
+    _oldPwdCtrl.dispose();
+    _newPwdCtrl.dispose();
+    _confirmPwdCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Wi-Fi 与密码管理')),
+      body: ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          Row(
+            children: [
+              ElevatedButton.icon(
+                onPressed: _busy ? null : _load,
+                icon: const Icon(Icons.refresh),
+                label: Text(_busy ? '读取中…' : '读取 Wi-Fi 信息'),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text('读取后可修改 SSID、密码、加密与开关。',
+                    style: TextStyle(fontSize: 12, color: Colors.white60)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ..._ssids.map((w) => Card(
+                color: const Color(0xFF1E1E1E),
+                margin: const EdgeInsets.only(bottom: 10),
+                child: ListTile(
+                  title: Text(w.ssid.orDash,
+                      style: const TextStyle(color: Colors.cyanAccent)),
+                  subtitle: Text(
+                      '${w.index == 0 ? "2.4G" : "5G"} · MAC ${w.mac.orDash} · ${w.authmode.orDash}/${w.encryption.orDash} · ${w.enable ? "已开启" : "已关闭"}'),
+                ),
+              )),
+          Card(
+            color: const Color(0xFF222222),
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('修改 Wi-Fi',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  if (_ssids.isNotEmpty)
+                    DropdownButton<int>(
+                      value: _selectedIndex,
+                      isExpanded: true,
+                      items: _ssids
+                          .map((e) => DropdownMenuItem(
+                                value: e.index,
+                                child: Text(
+                                    '${e.index == 0 ? "2.4G" : "5G"}  ${e.ssid}'),
+                              ))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v == null) return;
+                        final cur = _ssids.firstWhere((e) => e.index == v);
+                        setState(() {
+                          _selectedIndex = v;
+                          _ssidCtrl.text = cur.ssid;
+                          _authMode = cur.authmode.isEmpty ? 'WPA2-PSK' : cur.authmode;
+                          _encryption = cur.encryption.isEmpty ? 'AES' : cur.encryption;
+                          _enableWifi = cur.enable;
+                          _pwdCtrl.clear();
+                        });
+                      },
+                    ),
+                  TextField(
+                    controller: _ssidCtrl,
+                    decoration: const InputDecoration(labelText: 'Wi-Fi 名称 (SSID)'),
+                  ),
+                  TextField(
+                    controller: _pwdCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                        labelText: '新 Wi-Fi 密码（留空则不改动）'),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    Expanded(
+                      child: DropdownButton<String>(
+                        value: _authMode,
+                        isExpanded: true,
+                        items: const ['WPA2-PSK', 'WPA-PSK', 'WPA3-PSK', 'OPEN']
+                            .map((e) =>
+                                DropdownMenuItem(value: e, child: Text(e)))
+                            .toList(),
+                        onChanged: (v) =>
+                            setState(() => _authMode = v ?? _authMode),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DropdownButton<String>(
+                        value: _encryption,
+                        isExpanded: true,
+                        items: const ['AES', 'TKIP', 'AES+TKIP']
+                            .map((e) =>
+                                DropdownMenuItem(value: e, child: Text(e)))
+                            .toList(),
+                        onChanged: (v) =>
+                            setState(() => _encryption = v ?? _encryption),
+                      ),
+                    ),
+                  ]),
+                  SwitchListTile(
+                    title: const Text('开启该 Wi-Fi'),
+                    value: _enableWifi,
+                    onChanged: (v) => setState(() => _enableWifi = v),
+                  ),
+                  ElevatedButton(
+                    onPressed: _saveWifi,
+                    child: const Text('保存 Wi-Fi 设置'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Card(
+            color: const Color(0xFF222222),
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('修改管理后台密码',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _oldPwdCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: '当前管理密码'),
+                  ),
+                  TextField(
+                    controller: _newPwdCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: '新管理密码'),
+                  ),
+                  TextField(
+                    controller: _confirmPwdCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: '确认新密码'),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButton<String>(
+                    value: _pwdEndpoint,
+                    isExpanded: true,
+                    items: const [
+                      '/api/user/password_scram',
+                      '/api/user/pwd',
+                    ]
+                        .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                        .toList(),
+                    onChanged: (v) =>
+                        setState(() => _pwdEndpoint = v ?? _pwdEndpoint),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton(
+                    onPressed: _changeAdminPwd,
+                    child: const Text('提交修改管理密码'),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '提示：部分固件改密码走挑战-响应加密，若返回 100003 或错误码，请把下方响应原文发回适配。',
+                    style: TextStyle(fontSize: 11, color: Colors.white54),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_resultMsg.isNotEmpty)
+            Card(
+              color: const Color(0xFF1A1A1A),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: SelectableText(_resultMsg,
+                    style: const TextStyle(
+                        fontSize: 11, fontFamily: 'monospace')),
+              ),
+            ),
+          if (_stationRaw.isNotEmpty)
+            ExpansionTile(
+              title: const Text('已连接设备 / 站点信息（原文）'),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: SelectableText(_stationRaw,
+                      style: const TextStyle(
+                          fontSize: 11, fontFamily: 'monospace')),
+                ),
+              ],
+            ),
         ],
       ),
     );
