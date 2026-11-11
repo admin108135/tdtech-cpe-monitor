@@ -1148,6 +1148,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           IconButton(
+            icon: const Icon(Icons.travel_explore, color: Colors.lightGreenAccent),
+            tooltip: '探测邻区接口',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => NeighborProbeScreen(
+                  baseUrl: _baseUrl,
+                  sessionCookie: _sessionCookie,
+                  requestToken: _requestToken,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
             icon:
                 const Icon(Icons.lock_person_outlined, color: Colors.amberAccent),
             tooltip: '锁频段 / 锁PCI',
@@ -1482,6 +1496,207 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ],
                     ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ProbeResult {
+  final String endpoint;
+  int? status;
+  String body;
+  String note;
+  ProbeResult({
+    required this.endpoint,
+    this.status,
+    this.body = '',
+    this.note = '',
+  });
+}
+
+class NeighborProbeScreen extends StatefulWidget {
+  final String baseUrl;
+  final String sessionCookie;
+  final String requestToken;
+  const NeighborProbeScreen({
+    super.key,
+    required this.baseUrl,
+    required this.sessionCookie,
+    required this.requestToken,
+  });
+
+  @override
+  State<NeighborProbeScreen> createState() => _NeighborProbeScreenState();
+}
+
+class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
+  static const String _ua =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  static const List<String> _endpoints = [
+    '/api/device/nbrcellinfo',
+    '/api/device/seccellinfo',
+    '/api/net/cell-info',
+    '/api/net/lte-band-info',
+    '/api/net/plmn-list',
+    '/api/monitoring/best-position-result',
+    '/api/monitoring/best-position-result-v2',
+  ];
+  final List<ProbeResult> _results = [];
+  bool _busy = false;
+
+  Future<void> _probe() async {
+    setState(() {
+      _busy = true;
+      _results.clear();
+    });
+    for (final ep in _endpoints) {
+      final r = ProbeResult(endpoint: ep);
+      try {
+        final headers = <String, String>{
+          'Referer': '${widget.baseUrl}/html/index.html',
+          'User-Agent': _ua,
+        };
+        if (widget.sessionCookie.isNotEmpty) {
+          headers['Cookie'] = widget.sessionCookie;
+        }
+        if (widget.requestToken.isNotEmpty) {
+          headers['__RequestVerificationToken'] = widget.requestToken;
+        }
+        final resp = await http
+            .get(Uri.parse('${widget.baseUrl}$ep'), headers: headers)
+            .timeout(const Duration(seconds: 4));
+        r.status = resp.statusCode;
+        r.body = resp.body;
+        r.note = _judge(resp.body, resp.statusCode);
+      } catch (e) {
+        r.body = '$e';
+        r.note = '请求异常';
+      }
+      if (mounted) setState(() => _results.add(r));
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  String _judge(String body, int status) {
+    if (status != 200) return 'HTTP $status';
+    if (body.contains('100002') || body.contains('100003')) {
+      return '接口未开放 / 需登录';
+    }
+    final pci = RegExp(r'pci', caseSensitive: false).allMatches(body).length;
+    final rsrp = RegExp(r'rsrp', caseSensitive: false).allMatches(body).length;
+    if (pci >= 2 || rsrp >= 2) {
+      return '可能含多条小区 (PCI×$pci, RSRP×$rsrp)';
+    }
+    if (pci == 1 || rsrp == 1) return '仅单个小区信息';
+    return '未发现小区字段';
+  }
+
+  Color _noteColor(String note) {
+    if (note.contains('多条')) return Colors.greenAccent;
+    if (note.contains('未开放') || note.contains('需登录')) {
+      return Colors.amberAccent;
+    }
+    if (note.contains('异常')) return Colors.redAccent;
+    return Colors.white60;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('邻区接口探测')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _busy ? null : _probe,
+                  icon: const Icon(Icons.radar),
+                  label: Text(_busy ? '探测中…' : '开始探测'),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    '依次探测候选邻区/小区接口，看哪个返回多条小区。',
+                    style: TextStyle(fontSize: 12, color: Colors.white60),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _results.isEmpty
+                ? const Center(
+                    child: Text('点击"开始探测"',
+                        style: TextStyle(color: Colors.white38)))
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    itemCount: _results.length,
+                    itemBuilder: (ctx, i) {
+                      final r = _results[i];
+                      return Card(
+                        color: const Color(0xFF1E1E1E),
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(r.endpoint,
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            fontFamily: 'monospace')),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white12,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text('${r.status ?? '--'}',
+                                        style: const TextStyle(fontSize: 11)),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.copy, size: 16),
+                                    onPressed: () async {
+                                      await Clipboard.setData(ClipboardData(
+                                          text:
+                                              '[${r.endpoint}] HTTP ${r.status}\n${r.body}'));
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(const SnackBar(
+                                                content: Text('已复制')));
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                              Text(r.note,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: _noteColor(r.note))),
+                              const SizedBox(height: 6),
+                              SelectableText(
+                                r.body,
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white70,
+                                    fontFamily: 'monospace'),
+                                maxLines: 8,
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
           ),
         ],
