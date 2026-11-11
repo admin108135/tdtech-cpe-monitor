@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.telephony.CellIdentityLte
+import android.telephony.CellIdentityNr
 import android.telephony.CellInfo
 import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
@@ -54,8 +56,8 @@ class MainActivity : FlutterActivity() {
                 when (info) {
                     is CellInfoNr -> {
                         obj.put("type", "NR")
-                        val id = info.cellIdentityNr
-                        val sig = info.signalStrength
+                        val id = info.cellIdentity as CellIdentityNr
+                        val sig = info.cellSignalStrength as CellSignalStrengthNr
                         obj.put("pci", id.pci)
                         obj.put("arfcn", id.nrarfcn)
                         if (id.band > 0) obj.put("band", "n${id.band}")
@@ -67,8 +69,8 @@ class MainActivity : FlutterActivity() {
                     }
                     is CellInfoLte -> {
                         obj.put("type", "LTE")
-                        val id = info.cellIdentityLte
-                        val sig = info.signalStrength
+                        val id = info.cellIdentity as CellIdentityLte
+                        val sig = info.cellSignalStrength as CellSignalStrengthLte
                         obj.put("pci", id.pci)
                         obj.put("arfcn", id.earfcn)
                         if (id.band > 0) obj.put("band", "${id.band}")
@@ -109,7 +111,7 @@ class MainActivity : FlutterActivity() {
     private fun putLteSignal(obj: JSONObject, sig: CellSignalStrengthLte) {
         obj.put("rsrp", validDbm(sig.rsrp))
         obj.put("rsrq", validDbm(sig.rsrq))
-        obj.put("sinr", validDbm(sig.sinr))
+        obj.put("sinr", validDbm(sig.rssnr))
         obj.put("rssi", validDbm(sig.rssi))
     }
 }
