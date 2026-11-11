@@ -60,7 +60,6 @@ class MainActivity : FlutterActivity() {
                         val sig = info.cellSignalStrength as CellSignalStrengthNr
                         obj.put("pci", id.pci)
                         obj.put("arfcn", id.nrarfcn)
-                        if (id.band > 0) obj.put("band", "n${id.band}")
                         obj.put("mcc", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) (id.mccString ?: "") else "")
                         obj.put("mnc", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) (id.mncString ?: "") else "")
                         obj.put("cid", id.nci.toString())
@@ -73,7 +72,6 @@ class MainActivity : FlutterActivity() {
                         val sig = info.cellSignalStrength as CellSignalStrengthLte
                         obj.put("pci", id.pci)
                         obj.put("arfcn", id.earfcn)
-                        if (id.band > 0) obj.put("band", "${id.band}")
                         obj.put("mcc", intToStr(id.mcc))
                         obj.put("mnc", intToStr(id.mnc))
                         obj.put("cid", id.ci.toString())
