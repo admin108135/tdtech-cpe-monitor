@@ -1536,6 +1536,7 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
   static const String _ua =
       'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
   static const List<String> _endpoints = [
+    '/api/device/signal',
     '/api/device/nbrcellinfo',
     '/api/device/seccellinfo',
     '/api/net/cell-info',
@@ -1603,6 +1604,15 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
     return Colors.white60;
   }
 
+  bool get _benchAuthFailed {
+    for (final r in _results) {
+      if (r.endpoint == '/api/device/signal') {
+        return r.body.contains('100003') || r.body.contains('100002');
+      }
+    }
+    return false;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1628,6 +1638,20 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
               ],
             ),
           ),
+          if (_benchAuthFailed)
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.amber.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.amberAccent.withOpacity(0.4)),
+              ),
+              child: const Text(
+                '对照基准 signal 也返回鉴权失败：当前会话 cookie/token 没带上去。请先回主界面用钥匙重新登录，再回来探测；否则其余端点的 100003 不能说明端点未开放。',
+                style: TextStyle(fontSize: 12, color: Colors.amberAccent),
+              ),
+            ),
           Expanded(
             child: _results.isEmpty
                 ? const Center(
