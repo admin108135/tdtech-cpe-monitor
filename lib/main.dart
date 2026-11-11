@@ -579,9 +579,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _gatewayIp = prefs.getString('gateway_ip') ?? '192.168.1.1';
       _useHttps = prefs.getBool('use_https') ?? true;
       _sessionCookie = prefs.getString('session_cookie') ?? '';
+      _requestToken = prefs.getString('request_token') ?? '';
     });
     await _refreshToken();
     _startPolling();
+  }
+
+  Future<void> _persistSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('session_cookie', _sessionCookie);
+    await prefs.setString('request_token', _requestToken);
+  }
+
+  void _mergeSessionCookie(String setCookie) {
+    final sessionMatch = RegExp(r'SessionID=[^;]+').firstMatch(setCookie);
+    if (sessionMatch == null) return;
+    final newSession = sessionMatch.group(0)!;
+    final parts = _sessionCookie
+        .split(';')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    parts.removeWhere((p) => p.startsWith('SessionID='));
+    parts.add(newSession);
+    _sessionCookie = parts.join('; ');
   }
 
   Future<void> _refreshToken() async {
@@ -607,6 +628,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (tok != null) {
           _requestToken = tok;
         }
+        await _persistSession();
       }
     } catch (_) {}
   }
@@ -684,19 +706,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _updateHeadersFromResponse(http.Response response) {
+    bool changed = false;
     if (response.headers.containsKey('__requestverificationtoken')) {
       final rawTok = response.headers['__requestverificationtoken']!;
       _requestToken = rawTok
           .split('#')
           .firstWhere((e) => e.isNotEmpty, orElse: () => rawTok);
+      changed = true;
     }
     if (response.headers.containsKey('set-cookie')) {
-      final rawCookie = response.headers['set-cookie']!;
-      final sessionMatch = RegExp(r'SessionID=[^;]+').firstMatch(rawCookie);
-      if (sessionMatch != null) {
-        _sessionCookie = sessionMatch.group(0)!;
-      }
+      _mergeSessionCookie(response.headers['set-cookie']!);
+      changed = true;
     }
+    if (changed) _persistSession();
   }
 
   Future<String> _postHilinkXml(String apiPath, String xmlBody) async {
