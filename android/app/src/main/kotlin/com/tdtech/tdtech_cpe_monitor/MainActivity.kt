@@ -83,6 +83,9 @@ class MainActivity : FlutterActivity() {
                 arr.put(obj)
             }
             JSONObject().put("status", "ok").put("cells", arr).toString()
+        } catch (e: SecurityException) {
+            JSONObject().put("status", "security")
+                .put("message", e.message ?: "Not allowed").toString()
         } catch (e: Exception) {
             JSONObject().put("status", "error")
                 .put("message", e.message ?: "unknown").toString()

@@ -268,6 +268,7 @@ class _CellScanScreenState extends State<CellScanScreen> {
   static const MethodChannel _channel = MethodChannel('com.tdtech.cpe/cellinfo');
   bool _busy = false;
   bool _needPerm = false;
+  bool _blocked = false;
   String _status = '正在读取手机基带小区信息...';
   final List<CellTower> _cells = [];
 
@@ -280,16 +281,20 @@ class _CellScanScreenState extends State<CellScanScreen> {
   Future<void> _refresh() async {
     setState(() {
       _busy = true;
+      _blocked = false;
       _status = '正在读取手机基带...';
     });
-    final perm = await Permission.phone.status;
-    if (!perm.isGranted) {
-      final req = await Permission.phone.request();
-      if (!req.isGranted) {
+    final phoneStatus = await Permission.phone.status;
+    final locStatus = await Permission.locationWhenInUse.status;
+    if (!phoneStatus.isGranted || !locStatus.isGranted) {
+      final reqs = await [Permission.phone, Permission.locationWhenInUse].request();
+      final phoneOk = reqs[Permission.phone]?.isGranted ?? false;
+      final locOk = reqs[Permission.locationWhenInUse]?.isGranted ?? false;
+      if (!phoneOk || !locOk) {
         setState(() {
           _busy = false;
           _needPerm = true;
-          _status = '未获得电话权限，无法读取小区信息';
+          _status = '需要电话和位置权限才能读取小区信息';
         });
         return;
       }
@@ -304,6 +309,15 @@ class _CellScanScreenState extends State<CellScanScreen> {
           _busy = false;
           _needPerm = true;
           _status = '未获得电话权限';
+        });
+        return;
+      }
+      if (st == 'security') {
+        setState(() {
+          _busy = false;
+          _blocked = true;
+          _status = '系统限制：当前机型不允许第三方应用读取小区信息'
+              '（${doc['message'] ?? 'Not allowed'}）';
         });
         return;
       }
@@ -457,28 +471,39 @@ class _CellScanScreenState extends State<CellScanScreen> {
             style: TextStyle(fontSize: 11, color: Colors.white38),
           ),
           const SizedBox(height: 14),
-          if (_needPerm)
+          if (_needPerm || _blocked)
             Center(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.phone_android),
-                label: const Text('授予电话权限'),
-                onPressed: _refresh,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('重新申请权限'),
+                    onPressed: _busy ? null : _refresh,
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.settings),
+                    label: const Text('去系统设置'),
+                    onPressed: () => openAppSettings(),
+                  ),
+                ],
               ),
             ),
-          if (!_needPerm && serving.isNotEmpty) ...[
+          if (!_needPerm && !_blocked && serving.isNotEmpty) ...[
             const Text('服务小区',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ...serving.map((c) => _buildCellCard(c, false)),
           ],
-          if (!_needPerm && neighbors.isNotEmpty) ...[
+          if (!_needPerm && !_blocked && neighbors.isNotEmpty) ...[
             const SizedBox(height: 10),
             const Text('周边邻区',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             ...neighbors.map((c) => _buildCellCard(c, true)),
           ],
-          if (!_needPerm && !_busy && _cells.isEmpty)
+          if (!_needPerm && !_blocked && !_busy && _cells.isEmpty)
             Container(
               margin: const EdgeInsets.only(top: 20),
               padding: const EdgeInsets.all(16),
