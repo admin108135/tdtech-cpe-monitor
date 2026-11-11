@@ -568,6 +568,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final List<FlSpot> _sinrHistory = [];
   double _timeStep = 0;
   Timer? _pollingTimer;
+  bool _fetching = false;
 
   String get _baseUrl => '${_useHttps ? "https" : "http"}://$_gatewayIp';
 
@@ -669,7 +670,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _statusMessage = '正在实时轮询 ($_baseUrl)...';
     });
     _fetchSignalOnce();
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _fetchSignalOnce();
     });
   }
@@ -683,6 +684,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _fetchSignalOnce() async {
+    if (_fetching) return;
+    _fetching = true;
     try {
       final uri = Uri.parse('$_baseUrl/api/device/signal');
       final headers = Map<String, String>.from(_baseHeaders);
@@ -692,7 +695,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final response = await http
           .get(uri, headers: headers)
-          .timeout(const Duration(seconds: 2));
+          .timeout(const Duration(seconds: 4));
 
       _updateHeadersFromResponse(response);
 
@@ -702,47 +705,62 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final code =
               doc.rootElement.findElements('code').firstOrNull?.innerText ??
                   '未知';
-          setState(() {
-            _statusMessage =
-                '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]';
-          });
+          // 鉴权失败只提示，不清空本地 cookie/token，避免会话被误抹掉
+          if (mounted) {
+            setState(() {
+              _statusMessage =
+                  '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]';
+            });
+          }
           return;
         }
 
         final metrics = SignalMetrics.fromXml(doc);
-        setState(() {
-          _currentMetrics = metrics;
-          _statusMessage =
-              '${metrics.plmn} · 在线 (${metrics.timestamp.toIso8601String().substring(11, 19)})';
-          _timeStep += 1;
-          _rsrpHistory.add(FlSpot(_timeStep, metrics.nrRsrp));
-          _sinrHistory.add(FlSpot(_timeStep, metrics.nrSinr));
-          if (_rsrpHistory.length > 40) _rsrpHistory.removeAt(0);
-          if (_sinrHistory.length > 40) _sinrHistory.removeAt(0);
-        });
+        if (mounted) {
+          setState(() {
+            _currentMetrics = metrics;
+            _statusMessage =
+                '${metrics.plmn} · 在线 (${metrics.timestamp.toIso8601String().substring(11, 19)})';
+            _timeStep += 1;
+            _rsrpHistory.add(FlSpot(_timeStep, metrics.nrRsrp));
+            _sinrHistory.add(FlSpot(_timeStep, metrics.nrSinr));
+            if (_rsrpHistory.length > 40) _rsrpHistory.removeAt(0);
+            if (_sinrHistory.length > 40) _sinrHistory.removeAt(0);
+          });
+        }
       } else {
-        setState(() {
-          _statusMessage = 'HTTP 状态码异常: ${response.statusCode}';
-        });
+        if (mounted) {
+          setState(() {
+            _statusMessage = 'HTTP 状态码异常: ${response.statusCode}';
+          });
+        }
       }
     } catch (e) {
-      setState(() {
-        _statusMessage = '连接超时，请确认已连接 CPE Wi-Fi ($_baseUrl)';
-      });
+      if (mounted) {
+        setState(() {
+          _statusMessage = '连接超时，请确认已连接 CPE Wi-Fi ($_baseUrl)';
+        });
+      }
+    } finally {
+      _fetching = false;
     }
   }
 
   void _updateHeadersFromResponse(http.Response response) {
     bool changed = false;
-    if (response.headers.containsKey('__requestverificationtoken')) {
-      final rawTok = response.headers['__requestverificationtoken']!;
-      _requestToken = rawTok
+    final rawTok = response.headers['__requestverificationtoken'];
+    if (rawTok != null && rawTok.isNotEmpty) {
+      final clean = rawTok
           .split('#')
           .firstWhere((e) => e.isNotEmpty, orElse: () => rawTok);
-      changed = true;
+      if (clean.isNotEmpty) {
+        _requestToken = clean;
+        changed = true;
+      }
     }
-    if (response.headers.containsKey('set-cookie')) {
-      _mergeSessionCookie(response.headers['set-cookie']!);
+    final setCookie = response.headers['set-cookie'];
+    if (setCookie != null && setCookie.contains('SessionID=')) {
+      _mergeSessionCookie(setCookie);
       changed = true;
     }
     if (changed) _persistSession();
@@ -783,6 +801,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _showLockControlSheet() async {
+    _stopPolling();
     final prefs = await SharedPreferences.getInstance();
     String capturedApi =
         prefs.getString('last_dev_api') ?? '/api/net/cell-lock';
@@ -1051,6 +1070,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+    if (mounted) _startPolling();
   }
 
   Future<void> _showIpSettingsDialog() async {
@@ -1110,6 +1130,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  Future<void> _openPage(Widget page) async {
+    // 进入二级页期间暂停主轮询，避免并发请求竞争 CPE 会话导致被踢下线
+    _stopPolling();
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => page),
+    );
+    if (mounted) _startPolling();
+  }
+
   Future<void> _openWebAuthPage() async {
     _stopPolling();
     final capturedCookie = await Navigator.push<String>(
@@ -1146,46 +1176,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
           IconButton(
             icon: const Icon(Icons.network_cell, color: Colors.cyanAccent),
             tooltip: '手机基带小区扫描',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const CellScanScreen()),
-            ),
+            onPressed: () => _openPage(const CellScanScreen()),
           ),
           IconButton(
             icon: const Icon(Icons.travel_explore, color: Colors.lightGreenAccent),
             tooltip: '探测邻区接口',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => NeighborProbeScreen(
-                  baseUrl: _baseUrl,
-                  sessionCookie: _sessionCookie,
-                  requestToken: _requestToken,
-                ),
-              ),
-            ),
+            onPressed: () => _openPage(NeighborProbeScreen(
+              baseUrl: _baseUrl,
+              sessionCookie: _sessionCookie,
+              requestToken: _requestToken,
+            )),
           ),
           IconButton(
             icon: const Icon(Icons.content_paste, color: Colors.orangeAccent),
             tooltip: '粘贴解析邻区文本',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const NeighborTextParseScreen()),
-            ),
+            onPressed: () => _openPage(const NeighborTextParseScreen()),
           ),
           IconButton(
             icon: const Icon(Icons.wifi, color: Colors.blueAccent),
             tooltip: 'Wi-Fi 与密码管理',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => WifiManageScreen(
-                  baseUrl: _baseUrl,
-                  sessionCookie: _sessionCookie,
-                  requestToken: _requestToken,
-                ),
-              ),
-            ),
+            onPressed: () => _openPage(WifiManageScreen(
+              baseUrl: _baseUrl,
+              sessionCookie: _sessionCookie,
+              requestToken: _requestToken,
+            )),
           ),
           IconButton(
             icon:
