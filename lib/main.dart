@@ -988,7 +988,7 @@ class WebAuthScreen extends StatefulWidget {
 class _WebAuthScreenState extends State<WebAuthScreen> {
   final CookieManager _cookieManager = CookieManager.instance();
   String _capturedLog =
-      '提示：请先登录后台。如需录制开发者模式的锁频/锁小区接口，请在下方网页进入【开发者模式】点击一次保存，此处将自动显示捕获到的接口与报文。';
+      '提示：请先登录后台。下方网页浏览信号/小区/锁小区等页面时，此处会自动记录 GET 响应与 POST 请求的接口和报文，可用于核对邻区字段。';
 
   static const String _xhrInterceptorScript = '''
     (function() {
@@ -1002,10 +1002,22 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
         return origOpen.apply(this, arguments);
       };
       XMLHttpRequest.prototype.send = function(body) {
-        if (this._method && this._method.toUpperCase() === 'POST' && body) {
-          if (window.flutter_inappwebview) {
-            window.flutter_inappwebview.callHandler('onPostCaptured', this._url, body.toString());
+        var self = this;
+        var method = (this._method || '').toUpperCase();
+        var url = this._url || '';
+        var report = function(payload) {
+          if (window.flutter_inappwebview && url.indexOf('/api/') >= 0) {
+            window.flutter_inappwebview.callHandler('onApiCaptured', method, url, payload == null ? '' : String(payload));
           }
+        };
+        if (method === 'POST') {
+          if (body) report(body);
+        } else {
+          this.addEventListener('load', function() {
+            var resp = '';
+            try { resp = self.responseText || ''; } catch (e) {}
+            report(resp);
+          });
         }
         return origSend.apply(this, arguments);
       };
@@ -1057,7 +1069,7 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
                 color: Colors.cyanAccent,
                 fontFamily: 'monospace',
               ),
-              maxLines: 4,
+              maxLines: 10,
             ),
           ),
           Expanded(
@@ -1077,17 +1089,19 @@ class _WebAuthScreenState extends State<WebAuthScreen> {
               },
               onWebViewCreated: (controller) {
                 controller.addJavaScriptHandler(
-                  handlerName: 'onPostCaptured',
+                  handlerName: 'onApiCaptured',
                   callback: (args) async {
-                    if (args.length >= 2) {
-                      final apiUrl = args[0].toString();
-                      final xmlPayload = args[1].toString();
+                    if (args.length >= 3) {
+                      final method = args[0].toString();
+                      final apiUrl = args[1].toString();
+                      final payload = args[2].toString();
                       if (!apiUrl.contains('login')) {
                         final prefs = await SharedPreferences.getInstance();
                         await prefs.setString('last_dev_api', apiUrl);
-                        await prefs.setString('last_dev_xml', xmlPayload);
+                        await prefs.setString('last_dev_method', method);
+                        await prefs.setString('last_dev_xml', payload);
                         setState(() {
-                          _capturedLog = '已捕获接口: $apiUrl\n报文: $xmlPayload';
+                          _capturedLog = '[$method] $apiUrl\n报文: $payload';
                         });
                       }
                     }
