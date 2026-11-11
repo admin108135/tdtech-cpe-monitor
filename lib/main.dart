@@ -1544,6 +1544,12 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
     '/api/net/plmn-list',
     '/api/monitoring/best-position-result',
     '/api/monitoring/best-position-result-v2',
+    '/api/cradle/status-info',
+    '/api/antennascan/scan-status',
+    '/api/antennascan/get-mcu-version',
+    '/api/developer/atport-status',
+    '/api/monitoring/converged-status',
+    '/api/net/current-plmn',
   ];
   final List<ProbeResult> _results = [];
   bool _busy = false;
@@ -1586,12 +1592,16 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
     if (body.contains('100002') || body.contains('100003')) {
       return '接口未开放 / 需登录';
     }
-    final pci = RegExp(r'pci', caseSensitive: false).allMatches(body).length;
-    final rsrp = RegExp(r'rsrp', caseSensitive: false).allMatches(body).length;
-    if (pci >= 2 || rsrp >= 2) {
-      return '可能含多条小区 (PCI×$pci, RSRP×$rsrp)';
+    final cellNodes = RegExp(r'<(?:Cell|Neighbor|NbrCell|nrCell|LteCell)\b',
+            caseSensitive: false)
+        .allMatches(body)
+        .length;
+    final pciTags =
+        RegExp(r'<pci(?:\s|>|/)', caseSensitive: false).allMatches(body).length;
+    if (cellNodes >= 2 || pciTags >= 2) {
+      return '可能含多条小区 (小区节点×$cellNodes, PCI标签×$pciTags)';
     }
-    if (pci == 1 || rsrp == 1) return '仅单个小区信息';
+    if (cellNodes == 1 || pciTags == 1) return '仅单个小区信息';
     return '未发现小区字段';
   }
 
