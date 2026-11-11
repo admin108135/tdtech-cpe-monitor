@@ -1,7 +1,7 @@
 name: tdtech_cpe_monitor
 description: 鼎桥 5G CPE INS2 基站信号监测与锁频客户端
 publish_to: 'none'
-version: 1.3.2+7
+version: 1.3.3+8
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

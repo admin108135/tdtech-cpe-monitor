@@ -61,6 +61,7 @@ class SignalMetrics {
   final double nrRsrp;
   final double nrSinr;
   final double nrRsrq;
+  final Map<String, String> raw;
   final DateTime timestamp;
 
   SignalMetrics({
@@ -78,6 +79,7 @@ class SignalMetrics {
     required this.nrRsrp,
     required this.nrSinr,
     required this.nrRsrq,
+    required this.raw,
     required this.timestamp,
   });
 
@@ -98,6 +100,12 @@ class SignalMetrics {
       }
     }
     return '--';
+  }
+
+  static String _raw(XmlElement root, String tag) {
+    final elements = root.findElements(tag);
+    if (elements.isEmpty) return '';
+    return elements.first.innerText.trim();
   }
 
   static String _convertPciToDecimal(String rawPci) {
@@ -175,8 +183,22 @@ class SignalMetrics {
     final rawPci = _findTag(root, ['nrpci', 'pci', 'sc']);
     final decPci = _convertPciToDecimal(rawPci);
 
-    final rawMcs = _findTag(root, ['nrmcsup', 'mcs']);
+    final rawMcs = _findTag(root, ['nrulmcs', 'nrmcsup', 'mcs']);
     final rawTxPower = _findTag(root, ['nrtxpower', 'transpower', 'ppusch']);
+
+    const rawTags = [
+      'pci', 'sc', 'cell_id', 'rsrq', 'rsrp', 'rssi', 'sinr', 'rscp',
+      'ecio', 'mode', 'ulbandwidth', 'dlbandwidth', 'txpower', 'tdd',
+      'ul_mcs', 'dl_mcs', 'earfcn', 'rrc_status', 'rac', 'lac', 'tac',
+      'band', 'nei_cellid', 'plmn', 'ims', 'wdlfreq', 'lteulfreq',
+      'ltedlfreq', 'transmode', 'enodeb_id', 'cqi0', 'cqi1', 'ulfrequency',
+      'dlfrequency', 'nrulbandwidth', 'nrdlbandwidth', 'nrulmcs', 'nrdlmcs',
+      'nrtxpower', 'nrearfcn', 'nrulfreq', 'nrdlfreq', 'nrsinr', 'nrrsrp',
+      'nrrsrq', 'arfcn', 'bsic', 'rxlev',
+    ];
+    final raw = <String, String>{
+      for (final t in rawTags) t: _raw(root, t),
+    };
 
     return SignalMetrics(
       pci: decPci.isNotEmpty && decPci != rawPci ? '$rawPci ($decPci)' : rawPci,
@@ -197,6 +219,7 @@ class SignalMetrics {
           ? _parseNumeric(nrSinrStr, -20)
           : _parseNumeric(lteSinrStr, -20),
       nrRsrq: _parseNumeric(nrRsrqStr, -20),
+      raw: raw,
       timestamp: DateTime.now(),
     );
   }
@@ -1185,6 +1208,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             maxY: 40,
             lineColor: const Color(0xFF76FF03),
           ),
+          const SizedBox(height: 16),
+          if (m != null) _buildDetailPanel(m),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -1235,6 +1260,121 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 fontWeight: FontWeight.bold,
                 color: valueColor,
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _dv(Map<String, String> raw, String key) {
+    final v = raw[key] ?? '';
+    return v.isEmpty ? '--' : v;
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 118,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12, color: Colors.white60)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailGroupTitle(String t) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
+      child: Text(t,
+          style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              color: Colors.cyanAccent)),
+    );
+  }
+
+  Widget _buildDetailPanel(SignalMetrics m) {
+    final raw = m.raw;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('完整参数明细',
+              style:
+                  TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          _detailGroupTitle('小区标识'),
+          _detailRow('PCI', m.pci),
+          _detailRow('Cell ID', _dv(raw, 'cell_id')),
+          _detailRow('TAC', _dv(raw, 'tac')),
+          _detailRow('LAC', _dv(raw, 'lac')),
+          _detailRow('PLMN', _dv(raw, 'plmn')),
+          _detailRow('RRC 状态', _dv(raw, 'rrc_status')),
+          _detailRow('驻留模式 mode', _dv(raw, 'mode')),
+          _detailRow('IMS', _dv(raw, 'ims')),
+          _detailRow('CQI0 / CQI1',
+              '${_dv(raw, 'cqi0')} / ${_dv(raw, 'cqi1')}'),
+          _detailGroupTitle('5G NR'),
+          _detailRow('RSRP', _dv(raw, 'nrrsrp')),
+          _detailRow('RSRQ', _dv(raw, 'nrrsrq')),
+          _detailRow('SINR', _dv(raw, 'nrsinr')),
+          _detailRow('下行带宽', _dv(raw, 'nrdlbandwidth')),
+          _detailRow('上行带宽', _dv(raw, 'nrulbandwidth')),
+          _detailRow('下行 MCS', _dv(raw, 'nrdlmcs')),
+          _detailRow('上行 MCS', _dv(raw, 'nrulmcs')),
+          _detailRow('发射功率', _dv(raw, 'nrtxpower')),
+          _detailRow('ARFCN', _dv(raw, 'nrearfcn')),
+          _detailRow('下行频点', _dv(raw, 'nrdlfreq')),
+          _detailRow('上行频点', _dv(raw, 'nrulfreq')),
+          _detailGroupTitle('LTE / 其他制式'),
+          _detailRow('RSRP', _dv(raw, 'rsrp')),
+          _detailRow('RSRQ', _dv(raw, 'rsrq')),
+          _detailRow('SINR', _dv(raw, 'sinr')),
+          _detailRow('RSSI', _dv(raw, 'rssi')),
+          _detailRow('RSCP', _dv(raw, 'rscp')),
+          _detailRow('ECIO', _dv(raw, 'ecio')),
+          _detailRow('下行带宽', _dv(raw, 'dlbandwidth')),
+          _detailRow('上行带宽', _dv(raw, 'ulbandwidth')),
+          _detailRow('发射功率', _dv(raw, 'txpower')),
+          _detailRow('TDD', _dv(raw, 'tdd')),
+          _detailRow('下行 MCS', _dv(raw, 'dl_mcs')),
+          _detailRow('上行 MCS', _dv(raw, 'ul_mcs')),
+          _detailRow('EARFCN', _dv(raw, 'earfcn')),
+          _detailRow('下行频点', _dv(raw, 'dlfrequency')),
+          _detailRow('上行频点', _dv(raw, 'ulfrequency')),
+          _detailRow('eNodeB ID', _dv(raw, 'enodeb_id')),
+          _detailRow('传输模式', _dv(raw, 'transmode')),
+          _detailRow('ARFCN', _dv(raw, 'arfcn')),
+          _detailRow('BSIC', _dv(raw, 'bsic')),
+          _detailRow('RXLEV', _dv(raw, 'rxlev')),
+          _detailGroupTitle('邻区'),
+          Container(
+            margin: const EdgeInsets.only(top: 4),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+                color: Colors.white10,
+                borderRadius: BorderRadius.circular(8)),
+            child: const Text(
+              '⚠️ 当前设备 Web 接口不返回 CPE 基带邻区列表（nei_cellid 为空），无法获取周边邻区。',
+              style: TextStyle(fontSize: 12, color: Colors.amberAccent),
             ),
           ),
         ],
