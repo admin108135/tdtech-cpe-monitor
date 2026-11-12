@@ -641,6 +641,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _adminUser = 'admin';
   String _adminPassword = '';
   bool _loggingIn = false;
+  String _lastSignalRaw = '';
 
   String get _baseUrl => '${_useHttps ? "https" : "http"}://$_gatewayIp';
 
@@ -783,7 +784,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           '<?xml version="1.0" encoding="UTF-8"?><request>'
           '<username>${_escXml(_adminUser)}</username>'
           '<firstnonce>$firstNonce</firstnonce>'
-          '<mode>1</mode></request>';
+          '<mode>1</mode>'
+          '<loginflag>2</loginflag></request>';
       final challenge =
           await _postAuthXml('/api/user/challenge_login', challengeBody);
       _updateHeadersFromResponse(challenge);
@@ -866,12 +868,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _updateHeadersFromResponse(response);
 
       if (response.statusCode == 200) {
-        final doc = XmlDocument.parse(response.body);
+        final body = response.body;
+        _lastSignalRaw = body;
+        // 兼容根元素为 error 或 response 但内含错误码两种报文
+        final authFail = body.contains('100003') || body.contains('100002');
+        if (authFail) {
+          final code = body.contains('100003') ? '100003' : '100002';
+          // 鉴权失败只提示，不清空本地 cookie/token，避免会话被误抹掉
+          _setStatus(
+              '会话未认证 (错误码: $code)，请点钥匙重新登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]');
+          return;
+        }
+        final doc = XmlDocument.parse(body);
         if (doc.rootElement.name.local == 'error') {
           final code =
               doc.rootElement.findElements('code').firstOrNull?.innerText ??
                   '未知';
-          // 鉴权失败只提示，不清空本地 cookie/token，避免会话被误抹掉
           _setStatus(
               '需登录授权 (错误码: $code)，请点钥匙登录 [cookie:${_sessionCookie.length} token:${_requestToken.length}]');
           return;
@@ -1692,9 +1704,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
             decoration: BoxDecoration(
                 color: Colors.white10,
                 borderRadius: BorderRadius.circular(8)),
-            child: const Text(
-              '⚠️ 当前设备 Web 接口不返回 CPE 基带邻区列表（nei_cellid 为空），无法获取周边邻区。',
-              style: TextStyle(fontSize: 12, color: Colors.amberAccent),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '邻区不在 signal 报文内：请进「探测邻区接口」页跑 nbrcellinfo / seccellinfo；若这些接口也返回空，说明本机固件不上报周边邻区。',
+                  style: TextStyle(fontSize: 12, color: Colors.amberAccent),
+                ),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: _lastSignalRaw.isEmpty
+                      ? null
+                      : () async {
+                          await Clipboard.setData(
+                              ClipboardData(text: _lastSignalRaw));
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('已复制 signal 原始报文')),
+                            );
+                          }
+                        },
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('复制 signal 原始报文'),
+                ),
+              ],
             ),
           ),
         ],
