@@ -1833,36 +1833,46 @@ class NeighborProbeScreen extends StatefulWidget {
 class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
   static const String _ua =
       'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-  static const List<String> _endpoints = [
+  // 只读状态/邻区端点，默认探测
+  static const List<String> _coreEndpoints = [
     '/api/device/signal',
     '/api/device/nbrcellinfo',
     '/api/device/seccellinfo',
     '/api/net/cell-info',
     '/api/net/lte-band-info',
     '/api/net/plmn-list',
-    '/api/monitoring/best-position-result',
-    '/api/monitoring/best-position-result-v2',
     '/api/cradle/status-info',
-    '/api/antennascan/scan-status',
-    '/api/antennascan/get-mcu-version',
-    '/api/developer/atport-status',
     '/api/monitoring/converged-status',
     '/api/net/current-plmn',
   ];
+  // 测量/扫描/调试类端点：可能触发基带进入测量模式、短暂中断业务，默认不探测
+  static const List<String> _measureEndpoints = [
+    '/api/monitoring/best-position-result',
+    '/api/monitoring/best-position-result-v2',
+    '/api/antennascan/scan-status',
+    '/api/antennascan/get-mcu-version',
+    '/api/developer/atport-status',
+  ];
   final List<ProbeResult> _results = [];
   bool _busy = false;
+  bool _includeMeasure = false;
 
   Future<void> _probe() async {
     setState(() {
       _busy = true;
       _results.clear();
     });
-    for (final ep in _endpoints) {
+    final endpoints = [
+      ..._coreEndpoints,
+      if (_includeMeasure) ..._measureEndpoints,
+    ];
+    for (final ep in endpoints) {
       final r = ProbeResult(endpoint: ep);
       try {
         final headers = <String, String>{
           'Referer': '${widget.baseUrl}/html/index.html',
           'User-Agent': _ua,
+          'X-Requested-With': 'XMLHttpRequest',
         };
         if (widget.sessionCookie.isNotEmpty) {
           headers['Cookie'] = widget.sessionCookie;
@@ -1881,6 +1891,8 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
         r.note = '请求异常';
       }
       if (mounted) setState(() => _results.add(r));
+      // 请求间节流，避免连续高频冲击弱固件导致会话被重置/短暂断网
+      await Future.delayed(const Duration(milliseconds: 350));
     }
     if (mounted) setState(() => _busy = false);
   }
@@ -1946,6 +1958,18 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
                 ),
               ],
             ),
+          ),
+          SwitchListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            dense: true,
+            title: const Text('包含测量/扫描类端点',
+                style: TextStyle(fontSize: 13)),
+            subtitle: const Text('这类接口可能让基带进入测量模式、短暂断网，默认关闭',
+                style: TextStyle(fontSize: 11, color: Colors.white60)),
+            value: _includeMeasure,
+            onChanged: _busy
+                ? null
+                : (v) => setState(() => _includeMeasure = v),
           ),
           if (_benchAuthFailed)
             Container(
