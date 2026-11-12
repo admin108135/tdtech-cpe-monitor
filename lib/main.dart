@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
+import 'package:crypto/crypto.dart';
 import 'package:xml/xml.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,6 +14,72 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 extension StringX on String {
   String get orDash => isEmpty ? '--' : this;
+}
+
+String _escXml(String s) => s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+
+String _hexEncode(List<int> bytes) =>
+    bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+List<int> _hexDecode(String hex) {
+  final h = hex.replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+  return List.generate(
+      h.length ~/ 2, (i) => int.parse(h.substring(i * 2, i * 2 + 2), radix: 16));
+}
+
+String _randomNonce() {
+  final r = math.Random.secure();
+  const chars = '0123456789abcdef';
+  return List.generate(64, (_) => chars[r.nextInt(16)]).join();
+}
+
+/// PBKDF2-HMAC-SHA256 手动实现（仅依赖稳定的 Hmac/Sha256，避免高层 API 版本差异）。
+List<int> _pbkdf2HmacSha256(
+    List<int> password, List<int> salt, int iterations, int dkLen) {
+  const hashLen = 32;
+  final numBlocks = (dkLen / hashLen).ceil();
+  final out = <int>[];
+  for (var block = 1; block <= numBlocks; block++) {
+    final msg = <int>[
+      ...salt,
+      (block >> 24) & 255,
+      (block >> 16) & 255,
+      (block >> 8) & 255,
+      block & 255,
+    ];
+    var u = Hmac(Sha256(), password).convert(msg).bytes;
+    var t = List<int>.from(u);
+    for (var i = 1; i < iterations; i++) {
+      u = Hmac(Sha256(), password).convert(u).bytes;
+      for (var j = 0; j < t.length; j++) {
+        t[j] ^= u[j];
+      }
+    }
+    out.addAll(t);
+  }
+  return out.sublist(0, dkLen);
+}
+
+/// 华为 HiLink SCRAM-SHA256 变体（与公开逆向实现及第三方 App 报文一致）。
+/// 注意 HMAC 顺序为华为固件校验顺序：key="Client Key"，data=saltedPassword。
+String _computeClientProof(String password, String saltHex, int iterations,
+    String firstNonce, String serverNonce) {
+  final saltBytes = _hexDecode(saltHex);
+  final salted =
+      _pbkdf2HmacSha256(password.codeUnits, saltBytes, iterations, 32);
+  final clientKey =
+      Hmac(Sha256(), utf8.encode('Client Key')).convert(salted).bytes;
+  final storedKey = Sha256().convert(clientKey).bytes;
+  final authMessage = '$firstNonce,$serverNonce,$serverNonce';
+  final authKey =
+      Hmac(Sha256(), utf8.encode(authMessage)).convert(storedKey).bytes;
+  final proof = List<int>.generate(
+      clientKey.length, (i) => clientKey[i] ^ authKey[i]);
+  return _hexEncode(proof);
 }
 
 class CPEHttpOverrides extends io.HttpOverrides {
@@ -570,6 +638,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _pollingTimer;
   bool _fetching = false;
   String _lastStatus = '';
+  String _adminUser = 'admin';
+  String _adminPassword = '';
+  bool _loggingIn = false;
 
   String get _baseUrl => '${_useHttps ? "https" : "http"}://$_gatewayIp';
 
@@ -586,6 +657,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _useHttps = prefs.getBool('use_https') ?? true;
       _sessionCookie = prefs.getString('session_cookie') ?? '';
       _requestToken = prefs.getString('request_token') ?? '';
+      _adminUser = prefs.getString('cpe_admin_user') ?? 'admin';
+      _adminPassword = prefs.getString('cpe_admin_password') ?? '';
     });
     await _refreshToken();
     _startPolling();
@@ -635,7 +708,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final d1 = XmlDocument.parse(r1.body);
           final t =
               d1.rootElement.findElements('token').firstOrNull?.innerText;
-          if (t != null && t.isNotEmpty) _requestToken = t;
+          if (t != null && t.isNotEmpty) _requestToken = _trimToken(t);
         }
       } catch (_) {}
 
@@ -662,6 +735,98 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       await _persistSession();
     } catch (_) {}
+  }
+
+  /// 校验 token：# 分隔取首段；纯 hex 长串取后 32 位（华为初始 token 规则）
+  String _trimToken(String t) {
+    if (t.isEmpty) return t;
+    if (t.contains('#')) {
+      return t.split('#').firstWhere((e) => e.isNotEmpty, orElse: () => t);
+    }
+    if (t.length > 32) return t.substring(32);
+    return t;
+  }
+
+  Future<http.Response> _postAuthXml(String path, String body) async {
+    final headers = Map<String, String>.from(_baseHeaders);
+    headers['Content-Type'] =
+        'application/x-www-form-urlencoded; charset=UTF-8';
+    headers['X-Requested-With'] = 'XMLHttpRequest';
+    if (_requestToken.isNotEmpty) {
+      headers['__RequestVerificationToken'] = _requestToken;
+    }
+    return http
+        .post(Uri.parse('$_baseUrl$path'), headers: headers, body: body)
+        .timeout(const Duration(seconds: 5));
+  }
+
+  /// 访客会话：先打开 index.html 初始化 cookie，再取初始 token
+  Future<void> _initGuestSession() async {
+    try {
+      final r0 = await http
+          .get(Uri.parse('$_baseUrl/html/index.html'), headers: _baseHeaders)
+          .timeout(const Duration(seconds: 4));
+      _updateHeadersFromResponse(r0);
+    } catch (_) {}
+    await _refreshToken();
+  }
+
+  /// 华为 HiLink SCRAM 两步登录，成功返回 true
+  Future<bool> _scramLogin() async {
+    if (_adminPassword.isEmpty) return false;
+    _loggingIn = true;
+    try {
+      await _initGuestSession();
+
+      final firstNonce = _randomNonce();
+      final challengeBody =
+          '<?xml version="1.0" encoding="UTF-8"?><request>'
+          '<username>${_escXml(_adminUser)}</username>'
+          '<firstnonce>$firstNonce</firstnonce>'
+          '<mode>1</mode></request>';
+      final challenge =
+          await _postAuthXml('/api/user/challenge_login', challengeBody);
+      _updateHeadersFromResponse(challenge);
+      if (challenge.statusCode != 200) return false;
+
+      String tag(String n) => XmlDocument.parse(challenge.body)
+          .rootElement
+          .findElements(n)
+          .firstOrNull
+          ?.innerText ??
+          '';
+      final salt = tag('salt');
+      final serverNonce = tag('servernonce');
+      final iterations = int.tryParse(tag('iterations')) ?? 1000;
+      if (salt.isEmpty || serverNonce.isEmpty) return false;
+
+      final proof = _computeClientProof(
+          _adminPassword, salt, iterations, firstNonce, serverNonce);
+
+      final authBody =
+          '<?xml version="1.0" encoding="UTF-8"?><request>'
+          '<username>${_escXml(_adminUser)}</username>'
+          '<clientproof>$proof</clientproof>'
+          '<finalnonce>$serverNonce</finalnonce>'
+          '<password_type>4</password_type></request>';
+      final auth = await _postAuthXml(
+          '/api/user/authentication_login', authBody);
+      _updateHeadersFromResponse(auth);
+
+      final ok = auth.body.contains('<serversignature>') ||
+          (auth.statusCode == 200 && !auth.body.contains('<code>'));
+      if (ok) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cpe_admin_user', _adminUser);
+        await prefs.setString('cpe_admin_password', _adminPassword);
+        await _persistSession();
+      }
+      return ok;
+    } catch (_) {
+      return false;
+    } finally {
+      _loggingIn = false;
+    }
   }
 
   void _startPolling() {
@@ -741,9 +906,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     bool changed = false;
     final rawTok = response.headers['__requestverificationtoken'];
     if (rawTok != null && rawTok.isNotEmpty) {
-      final clean = rawTok
-          .split('#')
-          .firstWhere((e) => e.isNotEmpty, orElse: () => rawTok);
+      final clean = _trimToken(rawTok);
       if (clean.isNotEmpty) {
         _requestToken = clean;
         changed = true;
@@ -1138,6 +1301,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (mounted) _startPolling();
   }
 
+  Future<void> _showLoginDialog() async {
+    final userCtrl = TextEditingController(text: _adminUser);
+    final pwdCtrl = TextEditingController(text: _adminPassword);
+    String dialogMsg =
+        '当前会话 cookie:${_sessionCookie.length} token:${_requestToken.length}';
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDlg) => AlertDialog(
+          title: const Text('登录 CPE 管理后台'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: userCtrl,
+                decoration: const InputDecoration(labelText: '用户名'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: pwdCtrl,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: '管理后台密码'),
+              ),
+              const SizedBox(height: 10),
+              Text(dialogMsg,
+                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _openWebAuthPage();
+              },
+              child: const Text('网页授权登录'),
+            ),
+            ElevatedButton(
+              onPressed: _loggingIn
+                  ? null
+                  : () async {
+                      _adminUser =
+                          userCtrl.text.trim().isEmpty ? 'admin' : userCtrl.text.trim();
+                      _adminPassword = pwdCtrl.text;
+                      setDlg(() => dialogMsg = '正在验证…');
+                      final ok = await _scramLogin();
+                      if (!mounted) return;
+                      if (ok) {
+                        setDlg(() => dialogMsg = '登录成功，会话已建立');
+                        _startPolling();
+                      } else {
+                        setDlg(() => dialogMsg =
+                            '登录失败：密码错误或会话未建立，可改用网页授权');
+                      }
+                    },
+              child: Text(_loggingIn ? '验证中…' : 'SCRAM 自动登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _openWebAuthPage() async {
     _stopPolling();
     final capturedCookie = await Navigator.push<String>(
@@ -1207,8 +1433,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           IconButton(
             icon: const Icon(Icons.vpn_key_outlined),
-            tooltip: '网页登录与捕获接口',
-            onPressed: _openWebAuthPage,
+            tooltip: '登录后台（SCRAM / 网页授权）',
+            onPressed: _showLoginDialog,
           ),
           IconButton(
             icon: const Icon(Icons.settings_ethernet),
@@ -1630,7 +1856,8 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
     if (body.contains('100002') || body.contains('100003')) {
       return '接口未开放 / 需登录';
     }
-    final cellNodes = RegExp(r'<(?:Cell|Neighbor|NbrCell|nrCell|LteCell)\b',
+    final cellNodes = RegExp(
+            r'<(?:Cell|Neighbor|NbrCell|nrCell|LteCell|freq_info|nbrcell_nrlist|nbrcell_ltelist|nrseccell_list|lteseccell_list)\b',
             caseSensitive: false)
         .allMatches(body)
         .length;
