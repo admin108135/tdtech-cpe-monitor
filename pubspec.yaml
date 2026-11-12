@@ -10,7 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.0
-  crypto: ^3.0.6
+  crypto: 3.0.3
   xml: ^6.5.0
   fl_chart: ^0.66.2
   shared_preferences: ^2.2.2
