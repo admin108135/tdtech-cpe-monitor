@@ -1897,6 +1897,21 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
     if (mounted) setState(() => _busy = false);
   }
 
+  Future<void> _copyAll() async {
+    if (_results.isEmpty) return;
+    final buf = StringBuffer();
+    for (final r in _results) {
+      buf.writeln('[${r.endpoint}] HTTP ${r.status ?? '--'}');
+      buf.writeln(r.body);
+      buf.writeln('---');
+    }
+    await Clipboard.setData(ClipboardData(text: buf.toString()));
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已复制全部探测结果')));
+    }
+  }
+
   String _judge(String body, int status) {
     if (status != 200) return 'HTTP $status';
     if (body.contains('100002') || body.contains('100003')) {
@@ -1949,10 +1964,16 @@ class _NeighborProbeScreenState extends State<NeighborProbeScreen> {
                   icon: const Icon(Icons.radar),
                   label: Text(_busy ? '探测中…' : '开始探测'),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
+                OutlinedButton.icon(
+                  onPressed: _results.isEmpty ? null : _copyAll,
+                  icon: const Icon(Icons.copy_all, size: 16),
+                  label: const Text('复制全部'),
+                ),
+                const SizedBox(width: 10),
                 const Expanded(
                   child: Text(
-                    '依次探测候选邻区/小区接口，看哪个返回多条小区。',
+                    '邻区只看 nbrcellinfo / seccellinfo。',
                     style: TextStyle(fontSize: 12, color: Colors.white60),
                   ),
                 ),
