@@ -51,10 +51,10 @@ List<int> _pbkdf2HmacSha256(
       (block >> 8) & 255,
       block & 255,
     ];
-    var u = Hmac(Sha256(), password).convert(msg).bytes;
+    var u = Hmac(sha256, password).convert(msg).bytes;
     var t = List<int>.from(u);
     for (var i = 1; i < iterations; i++) {
-      u = Hmac(Sha256(), password).convert(u).bytes;
+      u = Hmac(sha256, password).convert(u).bytes;
       for (var j = 0; j < t.length; j++) {
         t[j] ^= u[j];
       }
@@ -72,11 +72,11 @@ String _computeClientProof(String password, String saltHex, int iterations,
   final salted =
       _pbkdf2HmacSha256(password.codeUnits, saltBytes, iterations, 32);
   final clientKey =
-      Hmac(Sha256(), utf8.encode('Client Key')).convert(salted).bytes;
-  final storedKey = Sha256().convert(clientKey).bytes;
+      Hmac(sha256, utf8.encode('Client Key')).convert(salted).bytes;
+  final storedKey = sha256.convert(clientKey).bytes;
   final authMessage = '$firstNonce,$serverNonce,$serverNonce';
   final authKey =
-      Hmac(Sha256(), utf8.encode(authMessage)).convert(storedKey).bytes;
+      Hmac(sha256, utf8.encode(authMessage)).convert(storedKey).bytes;
   final proof = List<int>.generate(
       clientKey.length, (i) => clientKey[i] ^ authKey[i]);
   return _hexEncode(proof);
